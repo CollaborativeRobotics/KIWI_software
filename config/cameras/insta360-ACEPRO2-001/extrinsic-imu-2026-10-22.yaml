@@ -1,0 +1,30 @@
+# Cam <-> IMU extrinsic for insta360-ACEPRO2-001 (single lens), from Kalibr
+# kalibr_calibrate_imu_camera via `kiwi calib imu cam`, run 2026-10-22
+# (solved from VID_20261022_133123_009.mp4, 3840x2160@119.88 UltraWide,
+# ~1 kHz IMU, letter 7x5 AprilGrid, --frame-stride 20).
+#
+# cam0.T_cam_imu: p_cam = T_cam_imu @ p_imu, i.e. R_ItoC | p_IinC (rotation from
+# IMU to camera and position of the IMU in the camera frame).
+#
+# Solved against the 3840x2160 intrinsics profile (intrinsics-2026-10-22.npz);
+# the embedded camchain below is that mode's.
+#
+# Solve report: reprojection mean 1.69 / median 1.48 px, gyro residual mean
+# 0.0031 rad/s, accel residual mean 0.039 m/s^2, gravity |g| = 9.8065 m/s^2.
+# The rotation is a near-exact axis permutation (IMU aligned with the sensor to
+# within ~0.4 deg), the IMU sits ~18 mm from the optical centre, and the time
+# offset is -4.5 ms. Single lens: `kiwi calib imu check`'s front/back
+# composition does not apply.
+cam0:
+  T_cam_imu:
+  - [0.006636656136601511, -0.999976869929576, -0.0014880864124521638, -0.008492805938154232]
+  - [-0.9999761066320675, -0.00663951469225728, 0.0019243205611642368, -0.009748724880222643]
+  - [-0.0019341562230929647, 0.0014752798031949575, -0.9999970412902257, -0.01303401402488281]
+  - [0.0, 0.0, 0.0, 1.0]
+  camera_model: pinhole
+  distortion_coeffs: [0.08951521766131128, 0.11477324138974648, -0.11191599068012015, 0.04406782547238263]
+  distortion_model: equidistant
+  intrinsics: [1602.4555353898265, 1604.7042174510887, 1933.3269047590418, 1072.364404169022]
+  resolution: [3840, 2160]
+  rostopic: /cam0/image_raw
+  timeshift_cam_imu: -0.004519484850222524

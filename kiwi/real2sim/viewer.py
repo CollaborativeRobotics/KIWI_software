@@ -19,7 +19,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from kiwi.real2sim.asset import file_identity, validate_transform, write_json
-from kiwi.real2sim.overlay import composite_overlay, trajectory_overlay
+from kiwi.real2sim.overlay import (
+    composite_capsules,
+    composite_overlay,
+    trajectory_overlay,
+)
 from kiwi.real2sim.trajectories import load_trajectories, map_set_digest, same_world
 
 
@@ -111,7 +115,9 @@ class NativeRenderer:
         del checkpoint
         torch.cuda.empty_cache()
 
-    def render(self, pose, width, height, fov):
+    def render(self, pose, width, height, fov, depth=False):
+        """RGB uint8; with ``depth``, also the per-pixel ray distance (``inf``
+        where the splat is mostly transparent)."""
         from threedgrut.datasets.protocols import Batch
         from threedgrut.utils.render import apply_background
 
@@ -147,12 +153,18 @@ class NativeRenderer:
             outputs = apply_background(
                 self.model.background, self.model(batch, train=False), batch
             )
-            return (
+            rgb = (
                 (outputs["pred_features"][0].clamp(0, 1) * 255)
                 .to(torch.uint8)
                 .cpu()
                 .numpy()
             )
+            if not depth:
+                return rgb
+            dist = outputs["pred_dist"].reshape(height, width)
+            opacity = outputs["pred_opacity"].reshape(height, width)
+            dist = torch.where(opacity > 0.5, dist, torch.full_like(dist, math.inf))
+            return rgb, dist.float().cpu().numpy()
 
 
 def look_at(position, target):
@@ -220,6 +232,77 @@ def load_asset(asset: Path, trajectories: Path | None = None):
     return run, frames, checkpoint, episodes
 
 
+ROBOT_FILE = "replay_yam_world.npz"
+
+
+def load_robot(path: Path, world_scene: dict) -> dict:
+    """A same-world robot capsule overlay (``kiwi replay yam`` writes it).
+
+    ``path`` is the npz or the episode directory holding it. Holds
+    ``times`` (N,) on the episode clock, ``ends`` (N, G, 2, 3) world axis
+    endpoints, ``radius`` (G,) and ``color`` (G, 3).
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / ROBOT_FILE
+    with np.load(path, allow_pickle=False) as d:
+        robot = {k: d[k] for k in ("times", "ends", "radius", "color")}
+        raw = str(d["world_scene"]) if "world_scene" in d.files else ""
+        # Optional per-capsule issue highlights + the issue sections.
+        for key in ("issues", "issue_colors", "issue_labels"):
+            if key in d.files:
+                robot[key] = d[key]
+        robot["events"] = json.loads(str(d["events"])) if "events" in d.files else []
+    try:
+        world = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        world = {}
+    if not world:
+        raise ValueError(f"{path} records no world scene; re-run `kiwi replay yam`")
+    same_world(world, world_scene)
+    n = len(robot["times"])
+    if n < 1 or robot["ends"].shape[:1] != (n,) or robot["ends"].shape[2:] != (2, 3):
+        raise ValueError(f"{path}: malformed robot overlay")
+    return robot
+
+
+def robot_capsules(robot: dict | None, timestamp: float):
+    """The robot pose nearest ``timestamp``, or None outside its span."""
+    if robot is None:
+        return None
+    times = robot["times"]
+    if not times[0] - 0.05 <= timestamp <= times[-1] + 0.05:
+        return None
+    i = int(np.clip(np.searchsorted(times, timestamp), 1, len(times) - 1))
+    i = i - 1 if timestamp - times[i - 1] < times[i] - timestamp else i
+    color = robot["color"]
+    if "issues" in robot:
+        code = robot["issues"][i].astype(int)
+        hit = code > 0
+        if hit.any():
+            color = color.astype(np.float32)
+            hi = robot["issue_colors"][code[hit] - 1].astype(np.float32)
+            color[hit] = 0.3 * color[hit] + 0.7 * hi
+    return robot["ends"][i], robot["radius"], color
+
+
+def robot_issues_now(robot: dict | None, timestamp: float) -> list[str]:
+    """Labels of the issue sections covering ``timestamp``."""
+    if robot is None:
+        return []
+    return [
+        e["label"] for e in robot.get("events", []) if e["t0"] <= timestamp <= e["t1"]
+    ]
+
+
+def _composite_view(rgb, depth, pose, view, groups, robot):
+    """Robot capsules (depth-tested against the splat), then the lines."""
+    capsules = robot_capsules(robot, view["time"]) if view.get("show_robot") else None
+    if capsules is not None:
+        rgb = composite_capsules(rgb, depth, pose, view["fov"], *capsules)
+    return composite_overlay(rgb, pose, view["fov"], groups)
+
+
 def validate_view(view: dict, episodes: dict) -> dict:
     """A saved view is the camera and trajectory snapshot of one delivered image."""
     view = dict(view)
@@ -271,11 +354,13 @@ def render_asset(
     output: Path,
     *,
     trajectories: Path | None = None,
+    robot: Path | None = None,
 ) -> list[Path]:
     """Render one saved view object or a JSON list, without a Viser server."""
     from PIL import Image
 
-    _, _, checkpoint, episodes = load_asset(asset, trajectories)
+    run, _, checkpoint, episodes = load_asset(asset, trajectories)
+    robot = load_robot(robot, run["world_scene"]) if robot else None
     views = json.loads(Path(view).read_text())
     multiple = isinstance(views, list)
     views = views if multiple else [views]
@@ -290,9 +375,12 @@ def render_asset(
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         pose = np.asarray(item["camera_pose"])
-        rgb = renderer.render(pose, item["width"], item["height"], item["fov"])
-        rgb = composite_overlay(
-            rgb, pose, item["fov"], _groups_for_view(item, episodes)
+        item.setdefault("show_robot", robot is not None)
+        rgb, depth = renderer.render(
+            pose, item["width"], item["height"], item["fov"], depth=True
+        )
+        rgb = _composite_view(
+            rgb, depth, pose, item, _groups_for_view(item, episodes), robot
         )
         Image.fromarray(rgb).save(target)
         target.with_suffix(".view.json").write_text(json.dumps(item, indent=2) + "\n")
@@ -311,8 +399,10 @@ def serve_asset(
     max_resolution=1920,
     max_fps=15,
     pose_body="camera",
+    robot: Path | None = None,
 ):
-    _, frames, checkpoint, episodes = load_asset(asset, trajectories)
+    run, frames, checkpoint, episodes = load_asset(asset, trajectories)
+    robot = load_robot(robot, run["world_scene"]) if robot else None
     _serve(
         frames,
         checkpoint,
@@ -325,6 +415,7 @@ def serve_asset(
         max_fps,
         pose_body,
         title=Path(asset).name,
+        robot=robot,
     )
 
 
@@ -341,6 +432,7 @@ def _serve(
     pose_body,
     *,
     title,
+    robot=None,
 ):
     import viser
     from PIL import Image
@@ -410,6 +502,62 @@ def _serve(
                 "TCP paths unavailable: this asset has no fixed tool-tip transform for every arm."
             )
         paths_ui = client.gui.add_checkbox("Show paths", initial_value=True)
+        robot_ui = client.gui.add_checkbox(
+            "Show robot arms", initial_value=robot is not None, disabled=robot is None
+        )
+        robot_events = robot.get("events", []) if robot is not None else []
+        if robot is not None and "issue_labels" in robot:
+            with client.gui.add_folder("Robot issues"):
+                swatches = " · ".join(
+                    f'<span style="color:rgb{tuple(int(c) for c in rgb)}">&#9632;</span> {label}'
+                    for label, rgb in zip(robot["issue_labels"], robot["issue_colors"])
+                )
+                client.gui.add_markdown(
+                    f"{swatches}<br>{len(robot_events)} sections; affected arms "
+                    "and links are tinted."
+                )
+                robot_now = client.gui.add_markdown("")
+                event_labels = [
+                    f"{i + 1}. {e['label']}" for i, e in enumerate(robot_events)
+                ] or ["(none)"]
+                event_ui = client.gui.add_dropdown("Section", options=event_labels)
+                event_go = client.gui.add_button("Go to section")
+                event_prev = client.gui.add_button("Previous issue")
+                event_next = client.gui.add_button("Next issue")
+
+            def goto_event(e):
+                play.value = False
+                timeline.value = float(
+                    np.clip(e["t0"] - 0.5, timeline.min, timeline.max)
+                )
+
+            @event_go.on_click
+            def _(_):
+                if event_ui.value in event_labels and robot_events:
+                    goto_event(robot_events[event_labels.index(event_ui.value)])
+
+            def neighbour(direction):
+                t = timeline.value + 0.5
+                if direction > 0:
+                    pick = next((e for e in robot_events if e["t0"] > t + 1e-6), None)
+                else:
+                    pick = next(
+                        (e for e in reversed(robot_events) if e["t0"] < t - 0.05), None
+                    )
+                if pick is not None:
+                    event_ui.value = event_labels[robot_events.index(pick)]
+                    goto_event(pick)
+
+            event_prev.on_click(lambda _: neighbour(-1))
+            event_next.on_click(lambda _: neighbour(1))
+
+            @timeline.on_update
+            def _(_):
+                now = robot_issues_now(robot, timeline.value)
+                robot_now.content = (
+                    "**Now:** " + "<br>".join(now) if now else "**Now:** no issues"
+                )
+
         frusta_ui = client.gui.add_checkbox(
             "Show front / rear poses", initial_value=True
         )
@@ -473,6 +621,7 @@ def _serve(
                 time=float(np.clip(timeline.value, selected["low"], selected["high"])),
                 pose_body=body_ui.value,
                 show_paths=bool(paths_ui.value),
+                show_robot=bool(robot_ui.value),
                 show_frusta=bool(frusta_ui.value),
                 full_trajectory=bool(full_ui.value),
                 trail_window_s=float(window_ui.value),
@@ -494,7 +643,15 @@ def _serve(
                 client.camera.up_direction = -pose[:3, 1]
             state.update(pose=pose.copy(), version=state["version"] + 1)
 
-        for control in (timeline, body_ui, paths_ui, frusta_ui, full_ui, window_ui):
+        for control in (
+            timeline,
+            body_ui,
+            paths_ui,
+            robot_ui,
+            frusta_ui,
+            full_ui,
+            window_ui,
+        ):
             control.on_update(update_overlay)
 
         @client.camera.on_update
@@ -668,9 +825,16 @@ def _serve(
                 height = max(120, round(width / max(0.25, aspect)))
                 key = (pose.tobytes(), width, height, fov)
                 if state["cache_key"] != key:
-                    state["cache"] = renderer.render(pose, width, height, fov)
+                    state["cache"] = renderer.render(
+                        pose, width, height, fov, depth=robot is not None
+                    )
                     state["cache_key"] = key
-                rgb = composite_overlay(state["cache"], pose, fov, groups)
+                rgb, depth = (
+                    state["cache"] if robot is not None else (state["cache"], None)
+                )
+                rgb = _composite_view(
+                    rgb, depth, pose, dict(snapshot, fov=fov), groups, robot
+                )
                 with lock:
                     # Camera/time changes accept a coherent older frame; episode
                     # changes reject it so old tracks never appear in the new selection.
@@ -711,6 +875,7 @@ def main():
     parser.add_argument("--max-resolution", type=int, default=1920)
     parser.add_argument("--max-fps", type=int, default=15)
     parser.add_argument("--pose-body", choices=("camera", "tcp"), default="camera")
+    parser.add_argument("--robot", type=Path)
     args = parser.parse_args()
     if args.views:
         paths = render_asset(
@@ -719,6 +884,7 @@ def main():
             args.views,
             args.output or args.asset / "renders",
             trajectories=args.trajectories,
+            robot=args.robot,
         )
         print("\n".join(map(str, paths)))
     else:
@@ -732,6 +898,7 @@ def main():
             max_resolution=args.max_resolution,
             max_fps=args.max_fps,
             pose_body=args.pose_body,
+            robot=args.robot,
         )
 
 

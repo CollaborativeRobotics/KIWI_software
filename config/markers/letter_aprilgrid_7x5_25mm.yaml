@@ -1,0 +1,29 @@
+# Letter-size Kalibr/AprilGrid target, printed in-house on 8.5x11 in.
+#   grid:         7 cols x 5 rows  (35 tags)
+#   tag size:     25 mm
+#   tag spacing:  7.5 mm  ->  0.30 as fraction of tag size (Kalibr ratio)
+#   dictionary:   AprilTag 36h11
+#   start_id:     0
+#
+# Generated with the Kalibr image (kalibr_create_target_pdf --type apriltag
+# --nx 7 --ny 5 --tsize 0.025 --tspace 0.3) and placed unscaled on a Letter
+# landscape page with a 100 mm scale bar; see LAB_SETUP.md. IDs increment
+# row-major from the bottom-left tag (Kalibr convention).
+#
+# Same 2-cell border convention as calibio_kalibr_apriltag_board.yaml:
+# `tag_size` spans the whole printed black square.
+#
+# tag_size is the printed size. The 2026-10-22 print's 100 mm scale bar
+# measures 100 mm with calipers, so the nominal 25 mm holds. The solve's
+# metric scale follows this value; re-measure and update it for a new print.
+
+apriltag_grid:
+  letter_7x5:
+    tag_cols: 7
+    tag_rows: 5
+    tag_size: 0.025
+    tag_spacing: 0.30
+    dictionary: DICT_APRILTAG_36h11
+    border_bits: 2
+    start_id: 0
+    label: "Letter 7x5 AprilGrid (25mm tag, 7.5mm spacing)"

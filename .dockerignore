@@ -1,0 +1,9 @@
+# Build context for docker/Dockerfile: only what the env install needs.
+*
+!pixi.toml
+!pixi.lock
+!pyproject.toml
+!README.md
+!LICENSE
+!kiwi/
+kiwi/**/__pycache__

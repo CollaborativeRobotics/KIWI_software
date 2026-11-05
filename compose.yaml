@@ -1,0 +1,107 @@
+# Run pixi inside a container against this checkout. The pixi environments
+# are installed into the image at build time (PIXI_ENVIRONMENTS below):
+#     docker compose build                          # once, and after pixi.toml / pixi.lock changes
+#     docker compose run --rm pixi run test
+#     docker compose run --rm pixi run -e state -- kiwi run --episode data/scene/demo
+#     docker compose run --rm pixi run -e replay -- kiwi replay yam data/scene/demo
+#     docker compose run --rm pixi shell            # interactive env shell
+#     docker compose run --rm pixi-gpu run -e mask-gpu -- kiwi scene build --scene data/scene/scene.yaml
+#     docker compose run --rm pixi run -- kiwi calib intrinsics run ...   # Kalibr runs as a sibling container
+# Configure in .env (gitignored), e.g.:
+#     UID=1001
+#     GID=1001
+#     KIWI_ROOT=/home/me/repos/KIWI_software    # this checkout's host path (needed for kiwi calib)
+#     DOCKER_GID=999                            # getent group docker
+#     PIXI_ENVIRONMENTS=default state viz tune replay mask-gpu
+x-pixi: &pixi
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+      WORKSPACE: ${KIWI_ROOT:-/workspace}
+      PIXI_ENVIRONMENTS: ${PIXI_ENVIRONMENTS:-default state viz tune replay}
+  image: kiwi-pixi
+  working_dir: ${KIWI_ROOT:-/workspace}
+  volumes:
+    # Mounted at its host path so paths handed to sibling containers resolve.
+    - .:${KIWI_ROOT:-/workspace}
+    # kiwi calib runs Kalibr through the host daemon. Root-equivalent access
+    # to the host: drop this line if you do not calibrate from here.
+    - /var/run/docker.sock:/var/run/docker.sock
+    # Cameras in file-transfer mode auto-mount under /media/<user>/; kiwi
+    # import looks there. rslave: a camera plugged in later still shows up.
+    - type: bind
+      source: /media
+      target: /media
+      read_only: true
+      bind:
+        propagation: rslave
+    # Model cache (kiwi models fetch) survives container removal.
+    - kiwi-cache:/home/kiwi/.cache
+    # X11 for windowed tools (kiwi calib qr clock): the host's socket plus
+    # its auth cookie, read by the same UID.
+    - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    - ${XAUTHORITY:-/dev/null}:/home/kiwi/.Xauthority:ro
+  environment:
+    DISPLAY: ${DISPLAY:-}
+    XAUTHORITY: /home/kiwi/.Xauthority
+  # Host networking so viewers (viser, rerun, mkdocs serve) are reachable
+  # on localhost without per-port mappings.
+  network_mode: host
+  group_add:
+    - ${DOCKER_GID:-999}
+  stdin_open: true
+  tty: true
+
+services:
+  pixi:
+    <<: *pixi
+
+  # Same image with the NVIDIA GPUs attached (mask-gpu, ground).
+  pixi-gpu:
+    <<: *pixi
+    profiles: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Gaussian scene viewer (kiwi real2simviz): CUDA 12.8 toolchain image; the
+  # 3DGRUT renderer venv lives in build/3dgrut on the bind mount. Once:
+  #     docker compose build real2sim
+  #     docker compose run --rm real2sim bash third_party/setup_real2sim.sh
+  # then:
+  #     docker compose run --rm real2sim build/3dgrut/.venv/bin/kiwi real2simviz <asset> --port 8895
+  real2sim:
+    profiles: [real2sim]
+    build:
+      context: docker
+      dockerfile: real2sim.Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+        WORKSPACE: ${KIWI_ROOT:-/workspace}
+    image: kiwi-real2sim
+    working_dir: ${KIWI_ROOT:-/workspace}
+    volumes:
+      - .:${KIWI_ROOT:-/workspace}
+      - kiwi-cache:/home/kiwi/.cache
+    # Viser on localhost:8895 without a port mapping.
+    network_mode: host
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  kiwi-cache:

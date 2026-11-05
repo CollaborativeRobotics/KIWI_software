@@ -75,6 +75,7 @@ def view(
     port: int = 8895,
     max_resolution: int = 1920,
     pose_body: str = "camera",
+    robot: Path | None = None,
 ) -> None:
     from kiwi.real2sim.asset import read_asset
     from kiwi.real2sim.backend import _backend, run_worker
@@ -107,4 +108,6 @@ def view(
         args += ["--output", output]
     if views:
         args += ["--views", views]
+    if robot:
+        args += ["--robot", Path(robot).resolve()]
     run_worker(executable, "kiwi.real2sim.viewer", *args)

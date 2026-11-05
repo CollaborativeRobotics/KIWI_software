@@ -23,3 +23,6 @@ data/
 
 # uv (pixi owns the lockfile - pixi.lock)
 uv.lock
+
+# docker compose (per-user UID/GID)
+.env

@@ -1,6 +1,7 @@
 schema: chopstick_unit_v1
 description: >-
-  Chopstick gripper, chopstick design, physical build m1 with ArUco marker ID 1.
+  Chopstick gripper, chopstick design, physical build m1 with ArUco marker ID 1
+  (printed from KIWI_hardware), riding on camera insta360-X5-m1.
 tool: chopstick
 
 build:
@@ -8,16 +9,18 @@ build:
   marker:
     id: 1
     size: 0.014
-  # Fixed camera<->marker pose
+  # Fixed camera<->marker pose: kiwi eef calibrate, 2026-10-21, on VID_20261021_160507_00_002.insv.
+  # Solved through insta360-X5-m1's BORROWED intrinsics (insta360-X5-002's);
+  # re-run with --force once that camera has its own lens calibration.
   fixed_pose:
     rvec:
-    - 1.8290016340499122
-    - -0.032318295721456475
-    - -0.01677120561165797
+    - 1.8247069331358492
+    - 0.010001761597327656
+    - 0.004826115226273054
     tvec:
-    - -0.00014205080973838974
-    - 0.04021909100990825
-    - 0.030323637907744318
+    - 0.00020521918175832153
+    - 0.04319223234567644
+    - 0.035462068043050084
     fov_deg: 160.0
     out_size:
     - 1920
@@ -25,6 +28,13 @@ build:
     lens: front
 
 # Per-unit overrides over the tool's session: defaults. Omit to inherit.
-# session:
-#   angle_closed_deg: 17.0
-#   angle_open_deg: 107.0
+# Our arms printed the jaw dots pale salmon, not the design's red: on the Lab
+# a* channel they sit at 134-144 (below the red threshold 150, and below the
+# orange fingertips), so detect them as light-on-dark instead. They also come
+# out smaller in the plane warp (~110-190 px^2) than the design's min_area 145.
+# Swept on data/scene/first (2026-10-22), 20 s per wrist.
+session:
+  polarity: light
+  threshold: 90
+  min_area: 60
+  max_area: 400

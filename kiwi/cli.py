@@ -1138,6 +1138,312 @@ class ReplayView:
 
 
 @dataclass
+class ReplayYam:
+    """Roll episodes out on two YAM arms and render each to an MP4.
+
+    The dual-YAM rig (cylinder-link URDF from the YAM xacro, bases
+    --separation apart along Y, a simplified Chopstick SA on each flange)
+    tracks both tool tips with the same mink IK as `replay solve`, in the
+    episode's shared frame. Writes <episode>/replay_yam.npz and
+    <episode>/replay_yam.mp4, rendered on the CPU (no GPU or WebGL). With no
+    episode, rolls out a synthetic demo take. Needs the replay extra:
+    `pixi install -e replay`.
+    """
+
+    episodes: tyro.conf.Positional[tuple[Path, ...]] = ()
+    """Episode directories (each holding, or able to build, a
+    replay_state.npz). Omit for the synthetic demo."""
+    output: Path | None = None
+    """Video path; defaults to <episode>/replay_yam.mp4 (or
+    build/replay_yam_demo.mp4 for the demo). Only valid with one episode."""
+    fps: float = 30.0
+    """Decimate the capture clock to this rate (0 = native)."""
+    stride: int = 1
+    """Roll out every Nth frame of the (decimated) stream."""
+    traj_yaw: float = 0.0
+    """World-frame yaw (deg) baked into the trajectories."""
+    rot_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Body-frame intrinsic-XYZ rotation (deg) right-multiplied onto each EE
+    orientation."""
+    rebuild: bool = False
+    """Rebuild every replay_state.npz even when one exists."""
+    world_source: str = "markerless"
+    """World pose a rebuilt replay_state.npz is dumped from (markerless or
+    marker)."""
+    separation: float = 1.0
+    """Base-to-base distance along Y (m)."""
+    mount_yaw: float = 0.0
+    """Gripper rotation about the YAM flange axis (deg)."""
+    center: bool = True
+    """Land the mean of both tool-tip paths on --workspace; false lands the
+    episode's world origin there instead."""
+    workspace: tuple[float, float, float] = (0.35, 0.0, 0.15)
+    """Workspace anchor in the rig frame (m); the bases sit at x = 0."""
+    ws_yaw: float = 0.0
+    ws_pitch: float = 0.0
+    ws_roll: float = 0.0
+    solve_mode: Literal["independent", "combined"] = "combined"
+    ik_gain: float = 0.5
+    ik_iters: int = 120
+    posture_cost: float = 1e-3
+    orientation_cost: float = 1.0
+    size: tuple[int, int] = (720, 600)
+    """Size (px) of each of the two rendered views."""
+    render: bool = True
+    """Render the video; false writes only replay_yam.npz."""
+    ik_error_mm: float = 20.0
+    """Flag frames whose tool-tip tracking error exceeds this (IK miss)."""
+    tip_speed: float = 1.0
+    """Flag achieved tool-tip steps faster than this (m/s) as jumps."""
+    joint_speed: float = 10.0
+    """Flag single-joint steps faster than this (rad/s; the YAM's velocity
+    limit) as joint jumps/flips."""
+    base_tags: tuple[int, ...] = ()
+    """Two ArUco ids (DICT_4X4_100) on the table: put one base on each,
+    facing the work, in place of --separation / --workspace / --ws-* /
+    --center. The tags are located from the wrist cameras once and cached in
+    <episode>/base_tags.json."""
+    base_tag_size: float = 0.05
+    """Printed edge length of the base tags (m)."""
+    redetect: bool = False
+    """Locate the base tags again even when base_tags.json has them."""
+
+    def run(self) -> int:
+        import numpy as np
+
+        try:
+            from kiwi.replay import yam
+        except ImportError as e:
+            print(f"kiwi replay yam: {e} - needs the replay extra", file=sys.stderr)
+            return 2
+        if self.output is not None and len(self.episodes) > 1:
+            print(
+                "kiwi replay yam: --output needs exactly one episode", file=sys.stderr
+            )
+            return 2
+        if self.base_tags and (len(self.base_tags) != 2 or not self.episodes):
+            print(
+                "kiwi replay yam: --base-tags needs two ids and an episode",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            model, home = yam.build_model(
+                yam.yam_dual_urdf(self.separation, self.mount_yaw)
+            )
+        except ImportError as e:
+            print(f"kiwi replay yam: {e} - needs the replay extra", file=sys.stderr)
+            return 2
+
+        jobs: list[tuple] = []
+        failed = 0
+        if not self.episodes:
+            jobs.append(("demo", yam.demo_trajectories(), 30.0, None, None, ""))
+        else:
+            from kiwi.core.layout import REPLAY_STATE
+            from kiwi.replay.episodes import episode_to_qpos, load_meta
+
+            for episode in self.episodes:
+                try:
+                    _ensure_replay_state(
+                        episode, rebuild=self.rebuild, world_source=self.world_source
+                    )
+                    meta = load_meta([episode], fps=self.fps or None, quiet=True)
+                    trajs, _ = episode_to_qpos(
+                        meta,
+                        0,
+                        rot_offset_deg=self.rot_offset,
+                        traj_yaw_deg=self.traj_yaw,
+                        stride=self.stride,
+                    )
+                except (ValueError, FileNotFoundError, RuntimeError, KeyError) as e:
+                    failed += 1
+                    print(
+                        f"[FAIL] {episode.name}: {e} ({REPLAY_STATE})", file=sys.stderr
+                    )
+                    continue
+                fps = meta["fps"] / max(self.stride, 1)
+                with np.load(episode / REPLAY_STATE) as d:
+                    times = d["timestamps"][:: meta["decim"]][:: max(self.stride, 1)]
+                    world = str(d["world_scene"]) if "world_scene" in d.files else ""
+                jobs.append((episode.name, trajs, fps, episode, times, world))
+
+        from kiwi.core.layout import REPLAY_YAM, REPLAY_YAM_VIDEO, REPLAY_YAM_WORLD
+
+        rot = {"yaw": self.ws_yaw, "pitch": self.ws_pitch, "roll": self.ws_roll}
+        for name, trajs, fps, episode, times, world in jobs:
+            separation, base_yaw = self.separation, (0.0, 0.0)
+            if self.base_tags:
+                try:
+                    place = self._place_on_tags(episode, trajs)
+                except ValueError as e:
+                    failed += 1
+                    print(f"[FAIL] {name}: {e}", file=sys.stderr)
+                    continue
+                ws, separation = place["ws"], place["separation"]
+                base_yaw = place["base_yaw_deg"]
+                model, home = yam.build_model(
+                    yam.yam_dual_urdf(separation, self.mount_yaw, base_yaw)
+                )
+            elif self.center:
+                ws = yam.centered_workspace(trajs, self.workspace, **rot)
+            else:
+                ws = dict(zip("xyz", self.workspace), **rot)
+            ro = yam.solve_episode(
+                model,
+                home,
+                trajs,
+                ws,
+                fps=fps,
+                combined=self.solve_mode == "combined",
+                ik_iters=self.ik_iters,
+                ik_gain=self.ik_gain,
+                orientation_cost=self.orientation_cost,
+                posture_cost=self.posture_cost,
+            )
+            thr = yam.IssueThresholds(
+                self.ik_error_mm / 1e3, self.tip_speed, self.joint_speed
+            )
+            diag = yam.diagnose(yam.rollout_logs(ro), fps, thr)
+            clock = (
+                np.asarray(times, np.float64)[: len(ro.qpos)]
+                if times is not None
+                else np.arange(len(ro.qpos)) / fps
+            )
+            events = yam.issue_events(diag, clock)
+            r = ro.result
+            print(
+                f"{name}: {r.n} frames, tracking mean {r.mean_pos * 1e3:.1f} mm / "
+                f"worst {r.worst_pos * 1e3:.1f} mm, rot worst "
+                f"{np.degrees(r.worst_rot):.1f} deg, QP failures {r.qp_failures}"
+            )
+            for kind in yam.ISSUES:
+                hits = [e for e in events if e["kind"] == kind]
+                secs = sum(e["t1"] - e["t0"] + 1 / fps for e in hits)
+                print(f"  {yam.ISSUE_LABEL[kind]}: {len(hits)} sections, {secs:.1f} s")
+            for e in sorted(events, key=lambda e: -e["peak"])[:5]:
+                print(f"    {yam.event_label(e)}")
+            out_dir = episode if episode is not None else Path("build")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            npz = out_dir / (REPLAY_YAM if episode else "replay_yam_demo.npz")
+            yam.save_rollout(
+                ro,
+                npz,
+                separation=separation,
+                mount_yaw=self.mount_yaw,
+                base_yaw_deg=np.asarray(base_yaw),
+                ws=json.dumps({k: float(v) for k, v in ws.items()}),
+                times=clock,
+                **{f"issue_{k}": v for k, v in dataclasses.asdict(thr).items()},
+            )
+            print(f"  wrote {npz}")
+            if episode is not None:
+                # The arms posed in the episode's world, on its global clock:
+                # `kiwi real2simviz --robot` draws these into the splat.
+                world_npz = episode / REPLAY_YAM_WORLD
+                geoms = yam._cylinder_geoms(model)
+                np.savez_compressed(
+                    world_npz,
+                    times=clock,
+                    world_scene=world,
+                    **yam.world_capsules(model, ro, ws),
+                    # Per-capsule issue highlight (0 = none, k = 1 + index
+                    # into issue_labels) and the merged event list.
+                    issues=yam.issue_codes(
+                        model, geoms, diag, hold=int(round(0.2 * fps))
+                    ),
+                    issue_labels=np.asarray([yam.ISSUE_LABEL[k] for k in yam.ISSUES]),
+                    issue_colors=np.asarray(
+                        [yam.ISSUE_RGB[k] for k in yam.ISSUES], np.uint8
+                    ),
+                    events=json.dumps(
+                        [
+                            {
+                                "label": yam.event_label(e),
+                                "t0": e["t0"],
+                                "t1": e["t1"],
+                                "rgb": yam.ISSUE_RGB[e["kind"]],
+                            }
+                            for e in events
+                        ]
+                    ),
+                )
+                print(f"  wrote {world_npz}")
+            if self.render:
+                video = self.output or out_dir / (
+                    REPLAY_YAM_VIDEO if episode else "replay_yam_demo.mp4"
+                )
+                video = yam.render_rollout(
+                    model, ro, video, size=self.size, title=name, thresholds=thr
+                )
+                print(f"  wrote {video}")
+        return 1 if failed or not jobs else 0
+
+    def _place_on_tags(self, episode: Path, trajs: dict) -> dict:
+        from kiwi.app.base_tags import find_base_tags
+        from kiwi.replay import base_tags
+
+        ids = tuple(self.base_tags)
+        found = None if self.redetect else base_tags.load_base_tags(episode)
+        if (
+            found is None
+            or [t["id"] for t in found["tags"]] != list(ids)
+            or found["size"] != self.base_tag_size
+        ):
+            print(f"  locating base tags {ids} in the wrist videos ...", flush=True)
+            found = find_base_tags(episode, ids, self.base_tag_size)
+            print(f"  wrote {base_tags.save_base_tags(episode, found)}")
+        for t in found["tags"]:
+            if t["observations"]:
+                lenses = ", ".join(f"{k} {v}" for k, v in t["lenses"].items())
+                print(
+                    f"  tag {t['id']}: {t['inliers']}/{t['observations']} detections "
+                    f"({lenses}), spread {t['spread_m'] * 1e3:.0f} mm"
+                )
+        place = base_tags.base_placement(found, trajs)
+        left, right = place["base_yaw_deg"]
+        print(
+            f"  bases on tags: left {place['left_tag']}, right {place['right_tag']}, "
+            f"{place['separation']:.3f} m apart, yaw left {left:+.0f} / right "
+            f"{right:+.0f} deg"
+        )
+        if place["crossed"]:
+            print("  note: a hand worked nearer the other arm's base")
+        return place
+
+
+@dataclass
+class ReplayYamView:
+    """Play a solved YAM rollout in the browser with playback controls.
+
+    Serves <episode>/replay_yam.npz (written by `kiwi replay yam`) in viser:
+    a time slider, play / speed / loop, frame stepping, and the commanded
+    tool-tip paths with live tracking error. Plays back the stored joints;
+    nothing is re-solved. Needs the replay extra: `pixi install -e replay`.
+    """
+
+    rollout: tyro.conf.Positional[Path]
+    """An episode directory holding replay_yam.npz, or the npz itself."""
+    port: int = 8080
+    """Viser server port."""
+
+    def run(self) -> int:
+        try:
+            from kiwi.replay.yam_viewer import launch
+        except ImportError as e:
+            print(
+                f"kiwi replay yam-view: {e} - needs the replay extra", file=sys.stderr
+            )
+            return 2
+        try:
+            launch(self.rollout, port=self.port)
+        except (FileNotFoundError, RuntimeError, KeyError) as e:
+            print(f"kiwi replay yam-view: {e}", file=sys.stderr)
+            return 1
+        return 0
+
+
+@dataclass
 class Replay:
     """Kinematic replay: solve/play episodes, or inspect a robot description."""
 
@@ -1146,6 +1452,10 @@ class Replay:
             Annotated[ReplayRun, tyro.conf.subcommand("run", prefix_name=False)]
             | Annotated[ReplaySolve, tyro.conf.subcommand("solve", prefix_name=False)]
             | Annotated[ReplayView, tyro.conf.subcommand("view", prefix_name=False)]
+            | Annotated[ReplayYam, tyro.conf.subcommand("yam", prefix_name=False)]
+            | Annotated[
+                ReplayYamView, tyro.conf.subcommand("yam-view", prefix_name=False)
+            ]
         ),
         tyro.conf.OmitArgPrefixes,
     ]
@@ -4324,6 +4634,9 @@ class Real2simviz:
     """Screenshot/render destination; defaults to a directory inside the asset."""
     views: Path | None = None
     """Saved view JSON; renders PNGs without starting an interactive server."""
+    robot: Path | None = None
+    """Robot arms to draw into the scene: an episode directory holding
+    replay_yam_world.npz (written by `kiwi replay yam`), or that file."""
 
     def run(self) -> int:
         from kiwi.app.real2sim import view

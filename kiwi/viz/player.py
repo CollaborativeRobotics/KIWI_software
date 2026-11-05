@@ -18,11 +18,18 @@ every layer is placed on it, and nothing is logged on a private clock:
   the intrinsics needed to draw a camera frustum;
 * **tool state** - raw value and the completed output from ``eef_state_v1``
   at ``offset + i / fps``. Non-finite raw samples are omitted; completion
-  metadata colors filled spans.
+  metadata colors filled spans;
+* **head** - the hat marker's pose from ``head/head_marker.tum`` (seen by the
+  wrist rear cameras, so only in stretches): a path per stretch and moving
+  axes that clear between stretches. It is the marker, not the ego camera;
+* **base tags** - the table tags ``kiwi replay yam --base-tags`` located,
+  from ``base_tags.json``: a flat square, axes and id per tag, static;
+* **robot** - the YAM rollout's link capsules from ``replay_yam_world.npz``
+  (``kiwi replay yam``), already in the world frame and on the episode clock;
+  links in a flagged issue section are tinted as in ``real2simviz --robot``.
 
 The summary also lists existing artifact types this player does not draw:
-marker-anchor trajectories, the optional head-marker trajectory, and ground
-results. A head-marker pose is not an ego-camera pose; extra camera streams
+marker-anchor trajectories and ground results. Extra camera streams
 contribute video only.
 """
 
@@ -46,12 +53,13 @@ __all__ = [
 ]
 
 TIMELINE = "global"
+KINDS = ("video", "trajectory", "tool_state", "head", "base_tags", "robot")
+ROBOT_FILE = "replay_yam_world.npz"
 
 # Existing artifact types this player does not load. These notes describe
 # viewer coverage, independently of whether their optional stages have run.
 _PENDING = (
-    "world-frame layer: marker-anchor <arm>/register.tum and "
-    "head/head_marker.tum are not drawn; head-marker poses are not ego-camera poses",
+    "world-frame layer: marker-anchor <arm>/register.tum is not drawn",
     "ground plane + camera height: not drawn; the ground stage writes "
     "ground/ground_report.json and ground/ground_observations.npz",
 )
@@ -61,7 +69,7 @@ _PENDING = (
 class Layer:
     """One thing to log: a kind, the stream it belongs to, its artifact."""
 
-    kind: str  # "video" | "trajectory" | "tool_state"
+    kind: str  # video | trajectory | tool_state | head | base_tags | robot
     label: str
     path: Path
     offset_s: float = 0.0
@@ -79,9 +87,7 @@ class EpisodePlan:
         return tuple(ly for ly in self.layers if ly.kind == kind)
 
     def summary(self) -> str:
-        counts = {
-            k: len(self.of_kind(k)) for k in ("video", "trajectory", "tool_state")
-        }
+        counts = {k: len(self.of_kind(k)) for k in KINDS}
         head = ", ".join(f"{n} {k}" for k, n in counts.items())
         return f"{self.sources.name}: {head}" + (
             f"; {len(self.notes)} note(s)" if self.notes else ""
@@ -150,6 +156,20 @@ def plan_layers(
                 f"(run `kiwi run --from-stage eef --to-stage eef`)"
             )
 
+    from kiwi.core import layout
+
+    head = Path(sources.root) / layout.HEAD_DIR / layout.HEAD_TUM
+    if head.is_file():
+        layers.append(Layer("head", "head_marker", head, 0.0))
+
+    tags = Path(sources.root) / layout.BASE_TAGS
+    if tags.is_file():
+        layers.append(Layer("base_tags", "base_tags", tags, 0.0))
+
+    robot = Path(sources.root) / ROBOT_FILE
+    if robot.is_file():
+        layers.append(Layer("robot", "yam", robot, 0.0))
+
     notes.extend(_PENDING)
     return EpisodePlan(sources=sources, layers=tuple(layers), notes=tuple(notes))
 
@@ -190,7 +210,7 @@ def _summary_markdown(plan: EpisodePlan) -> str:
     for s in src.streams:
         lines.append(f"| {s.label} | {s.kind} | {s.offset_s:+.3f} |")
     lines += ["", "## layers", ""]
-    for kind in ("video", "trajectory", "tool_state"):
+    for kind in KINDS:
         got = ", ".join(ly.label for ly in plan.of_kind(kind)) or "-"
         lines.append(f"- **{kind}**: {got}")
     if plan.notes:
@@ -314,6 +334,120 @@ def _log_tool_state(rr, layer: Layer) -> None:
         )
 
 
+HEAD_COLOR = (90, 200, 250)
+HEAD_GAP_S = 1.0  # the head stage's segment gap
+HEAD_AXIS_M = 0.08
+
+
+def _log_head(rr, layer: Layer) -> None:
+    from kiwi.core.trajectory import load_tum
+    from scipy.spatial.transform import Rotation
+
+    t, p, q_xyzw, _ = load_tum(layer.path)
+    t = np.asarray(t, dtype=np.float64)
+    p = np.asarray(p, dtype=np.float64)
+    if t.size == 0:
+        return
+    cut = np.flatnonzero(np.diff(t) > HEAD_GAP_S) + 1
+    rr.log(
+        f"world/path/{layer.label}",
+        rr.LineStrips3D(np.split(p, cut), colors=HEAD_COLOR),
+        static=True,
+    )
+    # Arrows rather than a moving transform: a transform would hold the last
+    # pose through every gap, while a Clear hides the marker until it is seen.
+    entity = f"world/head/{layer.label}"
+    axes = Rotation.from_quat(np.asarray(q_xyzw, dtype=np.float64)).as_matrix()
+    vectors = HEAD_AXIS_M * np.swapaxes(axes, 1, 2).reshape(-1, 3)
+    rr.send_columns(
+        entity,
+        indexes=[rr.TimeColumn(TIMELINE, duration=t)],
+        columns=rr.Arrows3D.columns(
+            origins=np.repeat(p, 3, axis=0),
+            vectors=vectors,
+            colors=np.tile([[255, 0, 0], [0, 255, 0], [0, 0, 255]], (len(t), 1)),
+        ).partition(np.full(len(t), 3)),
+    )
+    for end in np.r_[t[cut - 1], t[-1]]:
+        rr.set_time(TIMELINE, duration=float(end) + 0.5 / 30)
+        rr.log(entity, rr.Clear(recursive=False))
+
+
+TAG_COLOR = (240, 240, 240)
+
+
+def _log_base_tags(rr, layer: Layer) -> None:
+    import json
+
+    found = json.loads(layer.path.read_text())
+    size = float(found["size"])
+    for tag in found["tags"]:
+        if tag.get("position") is None:
+            continue
+        entity = f"world/base_tags/{tag['id']}"
+        rr.log(
+            entity,
+            rr.Transform3D(
+                translation=tag["position"],
+                quaternion=rr.Quaternion(xyzw=tag["quaternion_xyzw"]),
+            ),
+            rr.TransformAxes3D(axis_length=size),
+            static=True,
+        )
+        rr.log(
+            f"{entity}/tag",
+            rr.Boxes3D(
+                half_sizes=[[size / 2, size / 2, 0.001]],
+                colors=TAG_COLOR,
+                labels=[f"tag {tag['id']}"],
+                fill_mode="solid",
+            ),
+            static=True,
+        )
+
+
+def _z_to(axis: np.ndarray) -> np.ndarray:
+    """xyzw quaternions turning +Z onto each unit row of ``axis``."""
+    z = np.array([0.0, 0.0, 1.0])
+    q = np.concatenate([np.cross(z, axis), 1.0 + axis[:, 2:3]], axis=1)
+    flip = q[:, 3] < 1e-9  # pointing down -Z: any half-turn about X
+    q[flip] = [1.0, 0.0, 0.0, 0.0]
+    return q / np.linalg.norm(q, axis=1, keepdims=True)
+
+
+def _log_robot(rr, layer: Layer) -> None:
+    with np.load(layer.path, allow_pickle=False) as d:
+        t = np.asarray(d["times"], dtype=np.float64)
+        ends = np.asarray(d["ends"], dtype=np.float64)  # (N, G, 2, 3)
+        radius = np.asarray(d["radius"], dtype=np.float32)
+        base = np.asarray(d["color"], dtype=np.float32)
+        issues = issue_rgb = None
+        if "issues" in d.files:
+            issues = d["issues"].astype(int)
+            issue_rgb = d["issue_colors"].astype(np.float32)
+    n, g = ends.shape[:2]
+    start = ends[:, :, 0].reshape(-1, 3)
+    span = (ends[:, :, 1] - ends[:, :, 0]).reshape(-1, 3)
+    length = np.linalg.norm(span, axis=1)
+    axis = span / np.maximum(length, 1e-12)[:, None]
+    colors = np.broadcast_to(base, (n, g, 3)).copy()
+    if issues is not None:
+        # The same 70 % blend toward the issue colour as real2simviz.
+        hit = issues > 0
+        colors[hit] = 0.3 * colors[hit] + 0.7 * issue_rgb[issues[hit] - 1]
+    rr.send_columns(
+        f"world/robot/{layer.label}",
+        indexes=[rr.TimeColumn(TIMELINE, duration=t)],
+        columns=rr.Capsules3D.columns(
+            translations=start,
+            quaternions=_z_to(axis),
+            lengths=length.astype(np.float32),
+            radii=np.tile(radius, n),
+            colors=colors.reshape(-1, 3).astype(np.uint8),
+        ).partition(np.full(n, g)),
+    )
+
+
 def _blueprint(rrb, plan: EpisodePlan):
     video_views = [
         rrb.Spatial2DView(name=ly.label, origin=f"streams/{ly.label}")
@@ -371,3 +505,9 @@ def log_episode(
             _log_trajectory(rr, layer)
         elif layer.kind == "tool_state":
             _log_tool_state(rr, layer)
+        elif layer.kind == "head":
+            _log_head(rr, layer)
+        elif layer.kind == "base_tags":
+            _log_base_tags(rr, layer)
+        elif layer.kind == "robot":
+            _log_robot(rr, layer)

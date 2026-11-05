@@ -82,9 +82,10 @@ MOUNT_GLOBS = ("media/*/*", "run/media/*/*")
 
 # Clip stems: VID_20260724_173320_00_050 on both the X5 and the GO 3, plus the
 # GO 3's PRO_ capture mode (PRO_VID_20231218_021737_00_048, paired with a
-# PRO_LRV_* proxy).
+# PRO_LRV_* proxy). The Ace Pro 2 drops the second-to-last field:
+# VID_20261021_160508_001.
 CLIP_RE = re.compile(
-    r"(?P<pro>PRO_)?VID_(?P<date>\d{8})_(?P<time>\d{6})_\d+_(?P<seq>\d+)\Z"
+    r"(?P<pro>PRO_)?VID_(?P<date>\d{8})_(?P<time>\d{6})(?P<mid>_\d+)?_(?P<seq>\d+)\Z"
 )
 
 # An imported clip's stem: the camera's own stem plus the optional ``_<tag>``
@@ -92,10 +93,10 @@ CLIP_RE = re.compile(
 # contain underscores (ego_video, insta360-X5-001), so it cannot be split off
 # the right; it is whatever follows a camera-shaped stem.
 TAGGED_RE = re.compile(
-    r"(?P<pro>PRO_)?(?:VID|LRV)_\d{8}_\d{6}_\d+_\d+(?:_(?P<tag>.+))?\Z"
+    r"(?P<pro>PRO_)?(?:VID|LRV)_\d{8}_\d{6}(?:_\d+)?_\d+(?:_(?P<tag>.+))?\Z"
 )
 
-# The X5 records .insv; the single-lens GO 3 records .mp4.
+# The X5 records .insv; the single-lens GO 3 and Ace Pro 2 record .mp4.
 CLIP_SUFFIXES = (".insv", ".mp4")
 
 # Anchored at the start of the name, so the AppleDouble sidecars macOS leaves
@@ -231,13 +232,15 @@ def newest_clips(mount: Path, n: int) -> list[Candidate]:
 def lrv_for(clip: Path) -> Path | None:
     # VID_20260701_191600_00_100.insv pairs with LRV_20260701_191600_01_100.lrv
     # (the second-to-last field differs), so glob for it. The GO 3's PRO_ mode
-    # pairs PRO_VID_* with PRO_LRV_*.
+    # pairs PRO_VID_* with PRO_LRV_*; the Ace Pro 2, with no such field, pairs
+    # VID_20261021_160508_001.mp4 with LRV_20261021_160508_001.lrv.
     m = CLIP_RE.match(clip.stem)
     if m is None:
         return None
     pro = m["pro"] or ""
+    mid = "_*" if m["mid"] else ""
     hits = sorted(
-        clip.parent.glob(f"{pro}LRV_{m['date']}_{m['time']}_*_{m['seq']}.lrv")
+        clip.parent.glob(f"{pro}LRV_{m['date']}_{m['time']}{mid}_{m['seq']}.lrv")
     )
     return hits[0] if hits else None
 

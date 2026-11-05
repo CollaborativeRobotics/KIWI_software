@@ -40,6 +40,7 @@ from __future__ import annotations
 from pathlib import Path
 
 __all__ = [
+    "BASE_TAGS",
     "DETECTIONS",
     "EEF_OVERLAY",
     "EEF_INPUTS",
@@ -60,6 +61,9 @@ __all__ = [
     "REGISTRATION_BUNDLE",
     "REPLAY_SOLVE",
     "REPLAY_STATE",
+    "REPLAY_YAM",
+    "REPLAY_YAM_VIDEO",
+    "REPLAY_YAM_WORLD",
     "SCENE_DIR",
     "STATE_INPUTS",
     "STATE_LATENT",
@@ -118,6 +122,10 @@ SYNC_INPUTS = "sync.inputs.json"  # sync: A/V-table content key behind the clock
 REGISTRATION_BUNDLE = "registration_bundle.json"  # register: both-arm aggregate
 REPLAY_STATE = "replay_state.npz"  # export state: the EE-state seam to replay
 REPLAY_SOLVE = "replay_solve.npz"  # replay solve: solved joints + IK metrics
+REPLAY_YAM = "replay_yam.npz"  # replay yam: solved YAM joints + TCP logs
+REPLAY_YAM_VIDEO = "replay_yam.mp4"  # replay yam: the rendered rollout
+REPLAY_YAM_WORLD = "replay_yam_world.npz"  # replay yam: arm capsules in world
+BASE_TAGS = "base_tags.json"  # replay yam --base-tags: table tags in world
 
 
 def raw_dir(episode_dir: Path) -> Path:

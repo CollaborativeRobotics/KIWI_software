@@ -1,0 +1,33 @@
+# Audio-vs-video stamping delay, per recording mode.
+#
+#   t_audio = t_video + av_delay_s
+#
+# Only the DIFFERENCE between two clips' delays is observable, so the scale
+# needs a zero: the `reference:` camera/mode below is it, by definition.
+#
+# A mode absent from `modes:` is UNMEASURED and MUST fail rather than default
+# to zero. This constant depends on the exact recording mode, RESOLUTION
+# INCLUDED. Re-measure after ANY mode change.
+#
+# Keys are DISPLAY-normalized (rotation applied) - kiwi.sync's RecordingMode
+# normalizes portrait/landscape storage of the same physical mode to one key.
+schema: av_sync_v1
+unit: insta360-ACEPRO2-001
+model: Insta360 Ace Pro 2
+reference: VID_20261022_105053_00_003.insv @ 1920x1920@119.88 (defines zero)
+method: rolling-QR video ground truth (kiwi calib qr sync -> delta_qr_ms) minus the
+  raw audio estimate (kiwi.sync.audio.estimate_raw_offset); converted by kiwi.sync.audio.av_delay_from_ground_truth,
+  the single place the sign lives.
+extraction: ffmpeg -map 0:a:0 -ac 1 -ar 48000 -f s16le -
+measured_at: '2026-10-22'
+modes:
+  3840x2160@119.88:
+    runs:
+    - 2026-10-22-run1
+    - 2026-10-22-run2
+    - 2026-10-22-run3
+    derived_ms:
+    - -2.4
+    - -7.1
+    - 2.9
+    av_delay_s: -0.0022

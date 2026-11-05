@@ -90,7 +90,10 @@ def count_video_streams(path: Path, *, ffprobe: str = "ffprobe") -> int:
         raise RuntimeError(
             f"ffprobe failed for {path}: {why[-1] if why else proc.returncode}"
         )
-    return len(proc.stdout.decode("ascii", "replace").split())
+    # ffprobe 7+ prints a stream's entries once more under each stream group
+    # it belongs to (Insta360 X5 .insv and Ace Pro 2 .mp4 carry one), so count
+    # distinct indices, not lines.
+    return len(set(proc.stdout.decode("ascii", "replace").split()))
 
 
 def _extract_stream(

@@ -34,7 +34,14 @@ def _ffprobe(args: list[str], path: Path, ffprobe: str) -> str:
         text=True,
         check=True,
     )
-    return out.stdout.strip()
+    # ffprobe 7+ prints a stream-level entry once more under each stream group
+    # (real camera containers carry one); the repeats must agree.
+    values = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    if len(set(values)) > 1:
+        raise RuntimeError(
+            f"{Path(path).name}: ambiguous ffprobe {args} {sorted(set(values))}"
+        )
+    return values[0] if values else ""
 
 
 def read_tmcd(path: Path, ffprobe: str = "ffprobe") -> tuple[str, float]:

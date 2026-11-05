@@ -1,0 +1,26 @@
+# insta360-X5-m0 - Insta360 X5 camera registry entry.
+#
+# Named after the chopstick gripper it rides on (ArUco tag 0).
+#
+# Recordings are matched to this unit by `serial:`, NEVER by directory name
+# (the embedded serial is read from the clip's telemetry). Calibration
+# artifacts are dated, append-only files; each pointer key below names the
+# active one, resolved only through kiwi.core.camera.registry.CameraUnit.
+# Publication = add the dated file + move the pointer.
+#
+# BORROWED CALIBRATION: every artifact below is a verbatim copy of
+# insta360-X5-002's (the files still say `unit: insta360-X5-002`), adopted
+# 2026-10-21 so this body can run the pipeline before its own board solve.
+# Same model, but expect a few px of lens error and a few mm / ms of
+# cam<->IMU error. Replace each pointer as this unit's own calibration is
+# published (`kiwi calib intrinsics publish`, `imu cam`, `imu noise`, ...).
+serial: "IAHYA2509RQSP8"
+model: Insta360 X5
+nickname: insta360-X5-m0
+intrinsics: intrinsics.npz
+intrinsics_kb4: intrinsics-kb4.json
+intrinsics_kb4_back: intrinsics-kb4-back.json
+extrinsic_imu: extrinsic-imu.yaml
+extrinsic_imu_back: extrinsic-imu-back.yaml
+imu_noise: imu-noise.yaml
+av_sync: av-sync.yaml

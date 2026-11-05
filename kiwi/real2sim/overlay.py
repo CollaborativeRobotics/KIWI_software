@@ -104,6 +104,90 @@ def composite_overlay(rgb, camera_pose, fov, groups):
     return output
 
 
+def composite_capsules(
+    rgb, depth, camera_pose, fov, ends, radius, color, *, near=0.01, light=(-0.35, -0.6)
+):
+    """Return a new RGB image with shaded capsules drawn in, depth-tested.
+
+    ``ends`` (G, 2, 3) world axis endpoints, ``radius`` (G,) metres,
+    ``color`` (G, 3) RGB. ``depth`` (H, W) is the scene's per-pixel ray
+    distance (``inf`` where empty) or ``None`` to draw over everything; a
+    capsule pixel is kept only where it is nearer than the scene and every
+    capsule drawn before it. ``camera_pose`` follows ``project_segments``.
+    Depth is the ray distance to the capsule surface, matching the
+    renderer's normalized rays. ``light`` is the screen direction a cylinder's
+    highlight leans toward.
+    """
+    image = np.asarray(rgb)
+    if image.ndim != 3 or image.shape[2] != 3 or image.dtype != np.uint8:
+        raise ValueError("Expected an HxWx3 uint8 RGB image")
+    height, width = image.shape[:2]
+    out = image.astype(np.float32)
+    zbuf = (
+        np.full((height, width), np.inf, np.float32)
+        if depth is None
+        else np.asarray(depth, np.float32).copy()
+    )
+    pose = np.asarray(camera_pose, dtype=np.float64)
+    focal = 0.5 * height / math.tan(fov / 2)
+    centre = np.array([width / 2 - 0.5, height / 2 - 0.5])
+    lx, ly = np.asarray(light, float) / np.linalg.norm(light)
+    cam = (np.asarray(ends, np.float64) - pose[:3, 3]) @ pose[:3, :3]
+    for (c0, c1), r, col in zip(
+        cam, np.asarray(radius, float), np.asarray(color, float)
+    ):
+        if c0[2] < near and c1[2] < near:
+            continue
+        if c0[2] < near or c1[2] < near:  # clip the axis at the near plane
+            a, b = (c0, c1) if c0[2] < near else (c1, c0)
+            a = a + (b - a) * (near - a[2]) / (b[2] - a[2])
+            c0, c1 = (a, b) if c0[2] < near else (b, a)
+        p0 = c0[:2] / c0[2] * focal + centre
+        p1 = c1[:2] / c1[2] * focal + centre
+        r0, r1 = focal * r / c0[2], focal * r / c1[2]
+        lo = np.floor(np.minimum(p0 - r0, p1 - r1)).astype(int)
+        hi = np.ceil(np.maximum(p0 + r0, p1 + r1)).astype(int) + 1
+        x0, y0 = max(lo[0], 0), max(lo[1], 0)
+        x1, y1 = min(hi[0], width), min(hi[1], height)
+        if x0 >= x1 or y0 >= y1:
+            continue
+        vv, uu = np.mgrid[y0:y1, x0:x1].astype(np.float32)
+        d = (p1 - p0).astype(np.float32)
+        length2 = float(d @ d)
+        if length2 > 1e-9:
+            t = np.clip(((uu - p0[0]) * d[0] + (vv - p0[1]) * d[1]) / length2, 0, 1)
+            side = ((uu - p0[0]) * d[1] - (vv - p0[1]) * d[0]) / math.sqrt(length2)
+            normal = np.array([d[1], -d[0]]) / math.sqrt(length2)
+        else:
+            t = np.zeros_like(uu)
+            side = uu - p0[0]
+            normal = np.array([1.0, 0.0])
+        du = uu - (p0[0] + t * d[0])
+        dv = vv - (p0[1] + t * d[1])
+        dist = np.sqrt(du * du + dv * dv)
+        rad = r0 + t * (r1 - r0)
+        alpha = np.clip(rad - dist + 0.5, 0.0, 1.0)
+        frac = np.clip(dist / np.maximum(rad, 1e-6), 0.0, 1.0)
+        bulge = np.sqrt(1.0 - frac * frac)
+        axis = c0 + t[..., None] * (c1 - c0)
+        surface = np.linalg.norm(axis, axis=-1) - r * bulge
+        win = zbuf[y0:y1, x0:x1]
+        keep = (alpha > 0) & (surface < win)
+        if not keep.any():
+            continue
+        # Lambert-ish falloff across the silhouette plus a soft highlight on
+        # the side facing ``light``.
+        facing = np.sign(normal @ (lx, ly)) or 1.0
+        s = np.clip(side / np.maximum(rad, 1e-6) * facing, -1, 1)
+        shade = 0.35 + 0.65 * bulge * (0.75 + 0.25 * s)
+        highlight = 70.0 * np.exp(-(((s - 0.45) / 0.2) ** 2)) * bulge
+        rgb_px = np.clip(col * shade[..., None] + highlight[..., None], 0, 255)
+        a = (alpha * keep)[..., None]
+        out[y0:y1, x0:x1] = out[y0:y1, x0:x1] * (1 - a) + rgb_px * a
+        win[keep] = surface[keep]
+    return np.rint(out).astype(np.uint8)
+
+
 def frustum_segments(pose, fov=math.radians(65), aspect=1.0, scale=0.08):
     """Return Viser-compatible camera-frustum wireframe in world coordinates.
 

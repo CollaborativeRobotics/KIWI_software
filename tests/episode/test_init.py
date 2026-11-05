@@ -166,6 +166,23 @@ def test_the_label_is_the_filename_tag_or_the_whole_stem(tmp_path, monkeypatch):
     assert by_name[untagged] == "PRO_VID_20260820_100005_00_046"
 
 
+def test_an_ace_pro_2_stem_without_the_middle_field_still_yields_its_tag(
+    tmp_path, monkeypatch
+):
+    # The Ace Pro 2 names clips VID_<date>_<time>_<seq>, one field short of the
+    # X5 / GO 3 stem; the import tag must still come off as the label.
+    ace = "VID_20261021_160508_001_ego_video.mp4"
+    ace_untagged = "VID_20261021_160508_002.mp4"
+    ep = _episode(tmp_path, [CLIP_A, ace, ace_untagged])
+    _registry(monkeypatch, {"00_001": A})
+    clips, problem = init_mod.discover_clips(ep, tmp_path / "cams")
+    assert not problem
+    by_name = {c.path.name: c.label for c in clips}
+    assert by_name[CLIP_A] == "left"
+    assert by_name[ace] == "ego_video"
+    assert by_name[ace_untagged] == "VID_20261021_160508_002"
+
+
 def test_find_episode_dirs_lists_a_sitting(tmp_path):
     for name in ("vid1", "vid2"):
         _episode(tmp_path, [CLIP_A], name=name)

@@ -1,0 +1,20 @@
+# insta360-ACEPRO2-001 - Insta360 Ace Pro 2 camera registry entry.
+#
+# Head-mounted ego camera, single lens, 1 kHz on-board IMU. It records .mp4,
+# and serial binding (kiwi import / kiwi init) reads .insv only, so this unit
+# is selected by name (`--camera ego_video=insta360-ACEPRO2-001`); the serial
+# below is what its mp4 telemetry reports, kept for provenance.
+#
+# Recording mode: Video, UltraWide FOV, stabilization off, 3840x2160@119.88.
+# av_sync: measured 2026-10-22 against insta360-X5-m1 (1920x1920@119.88, the
+# X5 reference zero) over three rolling-QR runs. Intrinsics: pinhole-equi,
+# mode-keyed like the GO 3's; the 3840x2160 profile is a 2026-10-22 solve on
+# the letter 7x5 board (reprojection std 1.59 / 1.07 px, mostly rolling-shutter
+# skew - 7.66 ms readout - during motion).
+serial: "IBGLH2601VVRXX"
+model: Insta360 Ace Pro 2
+nickname: insta360-ACEPRO2-001
+intrinsics:                          # K/D pinhole-equi, one profile per video mode
+  3840x2160: intrinsics-2026-10-22.npz   # 4K UltraWide (pinned ego mode)
+extrinsic_imu: extrinsic-imu-2026-10-22.yaml   # T_cam_imu + timeshift (4K solve)
+av_sync: av-sync-2026-10-22.yaml
