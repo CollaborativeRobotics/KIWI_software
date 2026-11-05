@@ -288,11 +288,12 @@ def scan_video_for_marker(
             f"0.149, not 149)"
         )
 
-    fps = VideoInfo.read(video).fps
+    info = VideoInfo.read(video)
+    fps = info.fps
     n_scan = int(round(scan_seconds * fps))
     rect = load_rectifier_auto(
         intrinsics,
-        src_size=(out_size, out_size),
+        src_size=(info.width, info.height),
         lens=FRONT,
         out_size=(out_size, out_size),
         fov_deg=fov_deg,
@@ -370,13 +371,14 @@ def write_debug_image(
     import cv2
 
     from kiwi.core.rectify import load_rectifier_auto
-    from kiwi.core.video import iter_frames
+    from kiwi.core.video import VideoInfo, iter_frames
 
     best = min(observations, key=lambda o: o.reproj)
     out_size = int(meta.get("out_size", 1920))
+    info = VideoInfo.read(video)
     rect = load_rectifier_auto(
         intrinsics,
-        src_size=(out_size, out_size),
+        src_size=(info.width, info.height),
         lens=str(meta.get("lens", "front")),
         out_size=(out_size, out_size),
         fov_deg=float(meta.get("fov_deg", 140.0)),

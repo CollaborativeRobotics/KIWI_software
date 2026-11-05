@@ -208,12 +208,74 @@ class IntrinsicsBundle:
             ds_back=d["ds_back"] if "ds_back" in d.files else None,
         )
 
+    def scaled_to(self, src_size: tuple[int, int]) -> "IntrinsicsBundle":
+        """This calibration for frames uniformly resized to ``src_size``.
+
+        Only the pinhole part (``fx fy cx cy``) scales; the equidistant ``D``
+        and the Double-Sphere ``xi``/``alpha`` act on angles and are kept.
+        Scaling follows :func:`kiwi.track.frames.rescale_kb4` (plain
+        multiplication). A ``src_size`` with a different aspect ratio is a
+        different crop - a different optical mapping, not a resize - and is
+        refused rather than stretched.
+        """
+        cw, ch = self.image_size
+        sw, sh = int(src_size[0]), int(src_size[1])
+        if (sw, sh) == (cw, ch):
+            return self
+        if sw <= 0 or sh <= 0:
+            raise ValueError(f"src_size must be positive, got {src_size!r}")
+        sx, sy = sw / cw, sh / ch
+        if abs(sx - sy) > 0.01 * max(sx, sy):
+            raise ValueError(
+                f"video frames are {sw}x{sh} but the intrinsics were calibrated "
+                f"at {cw}x{ch} - a different aspect ratio is a different crop, "
+                "not a resize; calibrate this video mode instead"
+            )
+
+        def scale_K(K: np.ndarray | None) -> np.ndarray | None:
+            if K is None:
+                return None
+            K = np.array(K, dtype=np.float64)
+            K[0, 0] *= sx
+            K[0, 2] *= sx
+            K[1, 1] *= sy
+            K[1, 2] *= sy
+            return K
+
+        def scale_ds(ds: np.ndarray | None) -> np.ndarray | None:
+            if ds is None:
+                return None
+            ds = np.array(ds, dtype=np.float64).ravel()  # [xi alpha fx fy cx cy]
+            ds[[2, 4]] *= sx
+            ds[[3, 5]] *= sy
+            return ds
+
+        return dataclasses.replace(
+            self,
+            K_front=scale_K(self.K_front),
+            K_back=scale_K(self.K_back),
+            ds_front=scale_ds(self.ds_front),
+            ds_back=scale_ds(self.ds_back),
+            image_size=(sw, sh),
+        )
+
     def rectifier_for(
         self,
         lens: str,
         out_size: tuple[int, int],
         fov_deg: float,
+        *,
+        src_size: tuple[int, int] | None = None,
     ) -> Rectifier:
+        """The rectifier for ``lens``, sampling source frames of ``src_size``.
+
+        ``src_size`` is the size of the frames the rectifier will be applied
+        to; when it differs from the calibrated ``image_size`` the calibration
+        is rescaled first (:meth:`scaled_to`). ``None`` assumes the frames are
+        at the calibrated size.
+        """
+        if src_size is not None:
+            return self.scaled_to(src_size).rectifier_for(lens, out_size, fov_deg)
         # Double Sphere when present, else equidistant fisheye.
         ds: np.ndarray | None = getattr(self, f"ds_{lens}")
         if ds is not None:
@@ -240,9 +302,13 @@ def load_rectifier_auto(
 
     The npz carries ``image_size`` plus per-lens ``K_{front,back}`` /
     ``D_{front,back}`` (equidistant fisheye) or ``ds_{front,back}``
-    (Double-Sphere), as written by the calibration tools. It is routed
-    through ``IntrinsicsBundle.load(...).rectifier_for(lens, out_size,
-    fov_deg)``; ``out_size`` defaults to ``src_size`` when omitted.
+    (Double-Sphere), as written by the calibration tools. ``src_size`` is
+    the (W, H) of the frames being rectified; a calibration fitted at a
+    different size is rescaled to it (same aspect ratio only - see
+    :meth:`IntrinsicsBundle.scaled_to`). ``out_size`` defaults to
+    ``src_size`` when omitted.
     """
     bundle = IntrinsicsBundle.load(npz_path)
-    return bundle.rectifier_for(lens, out_size or src_size, fov_deg)
+    return bundle.rectifier_for(
+        lens, out_size or src_size, fov_deg, src_size=src_size
+    )
