@@ -159,7 +159,9 @@ updated for 2 s (`--ui-deadman-s`), for example because the tab was closed or
 the network dropped. Keep the tab in front while the arms move.
 
 **Grippers and limits:**
-- Grippers are never commanded.
+- The grippers follow the demo's opening. They are clipped to the YAM follower's
+  range, 0 to 0.09385 m, and rate-limited to 0.25 m/s (`--max-gripper-vel`).
+  `--no-grippers` leaves them alone.
 - Every command is clamped to the joint limits.
 
 The page is not an E-stop. Keep the hardware stop at hand.
