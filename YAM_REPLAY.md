@@ -30,8 +30,11 @@ The ROS bridge is sr-evals `sim_station/ros_bridge_node.py`.
 $KIWI -e replay -- kiwi replay yam-export $EP
 ```
 
-This writes `$EP/joints_50hz.csv` (50 Hz, the YAM control rate) and
-`$EP/joints_50hz.json`, which is a report.
+This writes `$EP/joints_50hz.csv` (50 Hz, the YAM control rate),
+`$EP/joints_50hz.json` (a report), and `demo_<camera>.mp4` per synced camera:
+the demo footage on the trajectory's clock. The replay page plays the demo
+videos in step with the replay when they sit beside the CSV, so copy them along
+with it.
 
 **The CSV:**
 - Columns 1-14 are in the YAM `DESIRED_JOINT_ORDER`: left joint1-6, left
