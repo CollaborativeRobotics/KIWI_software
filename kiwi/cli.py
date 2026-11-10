@@ -1444,6 +1444,45 @@ class ReplayYamView:
 
 
 @dataclass
+class ReplayYamExport:
+    """Export a solved YAM rollout as a 50 Hz joint CSV for the robot and Isaac.
+
+    Reads <episode>/replay_yam.npz (written by `kiwi replay yam`) and writes
+    joints_50hz.csv: 14 columns in the YAM DESIRED_JOINT_ORDER (left joint1-6,
+    left gripper opening m, right joint1-6, right gripper) plus left_ok and
+    right_ok, 1 where that arm's solve is usable (`diagnose` rules, inside the
+    joint limits). openarm_ros2's replay_trajectory.py plays it section by
+    section. A report goes to <output stem>.json.
+    """
+
+    rollout: tyro.conf.Positional[Path]
+    """An episode directory holding replay_yam.npz, or the npz itself."""
+    output: Path | None = None
+    """CSV to write (default: <episode>/joints_50hz.csv)."""
+    limit_tol: float = 0.02
+    """Rad past a joint limit before a solved frame counts as unusable."""
+
+    def run(self) -> int:
+        from kiwi.replay.yam_export import write_joints_csv
+
+        src = self.rollout if self.rollout.is_dir() else self.rollout.parent
+        out = self.output or src / "joints_50hz.csv"
+        try:
+            report = write_joints_csv(self.rollout, out, limit_tol=self.limit_tol)
+        except (FileNotFoundError, KeyError) as e:
+            print(f"kiwi replay yam-export: {e}", file=sys.stderr)
+            return 1
+        print(f"wrote {out} ({report['frames']} steps, {report['seconds']:.1f} s)")
+        for side in ("left", "right"):
+            r = report[side]
+            print(
+                f"  {side}: unsolved {r['unsolved_s'] or 'none'}; "
+                f"clipped to limits up to {r['max_clip_rad']} rad"
+            )
+        return 0
+
+
+@dataclass
 class Replay:
     """Kinematic replay: solve/play episodes, or inspect a robot description."""
 
@@ -1455,6 +1494,10 @@ class Replay:
             | Annotated[ReplayYam, tyro.conf.subcommand("yam", prefix_name=False)]
             | Annotated[
                 ReplayYamView, tyro.conf.subcommand("yam-view", prefix_name=False)
+            ]
+            | Annotated[
+                ReplayYamExport,
+                tyro.conf.subcommand("yam-export", prefix_name=False),
             ]
         ),
         tyro.conf.OmitArgPrefixes,

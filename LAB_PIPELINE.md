@@ -29,6 +29,9 @@ EP=$SCENE/tabletop           # one directory per take
 | 8 | Build and open the view | `kiwi viz play --save`, host `rerun` | first run makes proxies |
 | 9 | Gaussian splat (optional) | `data/tools/` scripts, `kiwi real2simviz` | ~30 min GPU training |
 
+To play the solved YAM arms in Isaac and on the real robot, continue from step 7
+with [YAM_REPLAY.md](YAM_REPLAY.md).
+
 ## 1. Import
 
 Plug in each camera in U-Disk mode, one at a time. `--no-pick` copies the
@@ -158,6 +161,9 @@ Check the printed summary:
 Drop `--no-render` to also write `replay_yam.mp4`, rendered on the CPU.
 `kiwi replay yam-view $EP` plays the rollout in the browser, but that needs
 WebGL.
+
+To export the joints and replay them in Isaac or on the real arms, see
+[YAM_REPLAY.md](YAM_REPLAY.md) (`kiwi replay yam-export $EP`).
 
 ## 8. The Rerun view
 
