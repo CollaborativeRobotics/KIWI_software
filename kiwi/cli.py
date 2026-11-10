@@ -1461,9 +1461,12 @@ class ReplayYamExport:
     """CSV to write (default: <episode>/joints_50hz.csv)."""
     limit_tol: float = 0.02
     """Rad past a joint limit before a solved frame counts as unusable."""
+    demo_videos: bool = True
+    """Also write demo_<stream>.mp4 beside the CSV: each camera on the
+    trajectory's clock, for the replay UI (needs ffmpeg)."""
 
     def run(self) -> int:
-        from kiwi.replay.yam_export import write_joints_csv
+        from kiwi.replay.yam_export import write_demo_videos, write_joints_csv
 
         src = self.rollout if self.rollout.is_dir() else self.rollout.parent
         out = self.output or src / "joints_50hz.csv"
@@ -1473,6 +1476,24 @@ class ReplayYamExport:
             print(f"kiwi replay yam-export: {e}", file=sys.stderr)
             return 1
         print(f"wrote {out} ({report['frames']} steps, {report['seconds']:.1f} s)")
+        if self.demo_videos:
+            try:
+                vids = write_demo_videos(src, Path(out).parent, report["seconds"])
+            except (FileNotFoundError, OSError, subprocess.CalledProcessError) as e:
+                print(
+                    f"kiwi replay yam-export: demo videos skipped: {e}", file=sys.stderr
+                )
+                vids = {}
+            print(
+                f"  demo videos: {', '.join(vids.values()) or 'none (no synced stream with a video)'}"
+            )
+            rep = Path(out).with_suffix(".json")
+            rep.write_text(
+                json.dumps(
+                    {**json.loads(rep.read_text()), "demo_videos": vids}, indent=2
+                )
+                + "\n"
+            )
         for side in ("left", "right"):
             r = report[side]
             print(

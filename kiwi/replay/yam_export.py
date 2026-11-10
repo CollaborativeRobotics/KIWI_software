@@ -11,6 +11,11 @@ ROS station) and isaac_yam replay drivers consume:
   joint limits to ``limit_tol`` rad. A 50 Hz step is ok only if the solved
   frames on both sides of it are ok.
 
+Demo videos (``write_demo_videos``): each stream of the episode re-encoded on the
+trajectory's clock (the episode's global clock), as ``demo_<label>.mp4`` beside
+the CSV, so a frame at media time t shows the demo at trajectory time t. The
+replay UI plays them in step with the replay.
+
 The rollout's frames are resampled linearly to 50 Hz (the YAM control period).
 Arm joints are clipped to ``JOINT_LIMITS``. The Chopstick SA angle (OPEN 0 to
 CLOSED) maps linearly to the YAM gripper's total opening (FOLLOWER_GRIPPER_OPEN
@@ -20,6 +25,7 @@ to 0); replay_trajectory.py ignores the gripper columns.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -125,3 +131,52 @@ def write_joints_csv(rollout_path: Path, out: Path, **kw) -> dict:
             report[k] = np.asarray(rollout[k]).tolist()
     out.with_suffix(".json").write_text(json.dumps(report, indent=2) + "\n")
     return report
+
+
+def demo_video_argv(
+    src: Path, dst: Path, offset_s: float, duration_s: float, size: int = 480
+) -> list[str]:
+    """ffmpeg argv: ``src`` (a stream at ``offset_s`` on the global clock) cut and
+    shifted so media time t is global time t, scaled to fit ``size``, H.264 with
+    a keyframe every 0.5 s so the browser seeks quickly. Pure."""
+    skip = max(0.0, -offset_s)  # recorded offsets are <= 0: the stream started earlier
+    pad = max(0.0, offset_s)  # a provisional positive offset: hold its first frame
+    vf = (
+        f"scale={size}:{size}:force_original_aspect_ratio=decrease:force_divisible_by=2"
+    )
+    if pad > 0:
+        vf += f",tpad=start_duration={pad:.3f}:start_mode=clone"
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-ss", f"{skip:.3f}", "-i", str(src),
+        "-map", "0:v:0", "-t", f"{duration_s:.3f}", "-an", "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "15",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dst),
+    ]  # fmt: skip
+
+
+def write_demo_videos(
+    episode: Path, out_dir: Path, duration_s: float
+) -> dict[str, str]:
+    """``demo_<label>.mp4`` in ``out_dir`` for every synced stream of ``episode``
+    with a playable video (building its H.264 proxy if needed). Returns label ->
+    file name; streams without a video or a sync offset are skipped."""
+    from kiwi.app.sources import viz_sources
+    from kiwi.viz.proxies import playable_video
+
+    src = viz_sources(Path(episode)).sources
+    offsets = src.clock.offsets_s if src.clock is not None else {}
+    out: dict[str, str] = {}
+    for stream in src.streams:
+        if stream.label not in offsets or not stream.video.is_file():
+            continue
+        video = playable_video(stream.video, dst=stream.proxy)
+        if video is None:
+            continue
+        dst = Path(out_dir) / f"demo_{stream.label}.mp4"
+        subprocess.run(
+            demo_video_argv(video, dst, float(offsets[stream.label]), duration_s),
+            check=True,
+        )
+        out[stream.label] = dst.name
+    return out

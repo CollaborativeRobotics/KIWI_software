@@ -36,3 +36,16 @@ def test_ik_miss_and_limits_mark_steps_unusable():
     out, report = yam_export.export_joints(r)
     assert not out[:, 15].all() and report["right"]["unsolved_s"][0][0] < 0.5
     assert not out[-1, 14] and np.isclose(out[:, 3].max(), 1.5708)  # clipped
+
+
+def test_demo_video_argv_shifts_onto_the_global_clock():
+    a = yam_export.demo_video_argv(
+        "in.mp4", "out.mp4", offset_s=-0.192, duration_s=63.3
+    )
+    assert a[a.index("-ss") + 1] == "0.192" and a[a.index("-t") + 1] == "63.300"
+    assert "tpad" not in a[a.index("-vf") + 1]
+    b = yam_export.demo_video_argv("in.mp4", "out.mp4", offset_s=0.5, duration_s=10)
+    assert (
+        b[b.index("-ss") + 1] == "0.000"
+        and "tpad=start_duration=0.500" in b[b.index("-vf") + 1]
+    )
