@@ -46,6 +46,10 @@ with it.
   - inside the joint limits to `--limit-tol` (0.02 rad).
 - Joints are clipped to the limits both the real arm and Isaac's model accept.
 
+**`task_50hz.csv`**, on the same rows, holds each arm's demo tool pose (the
+chopstick tip KIWI tracked) in that arm's own base frame: x y z and a
+quaternion. The replay's delta mode (step 5) uses it.
+
 **The report** lists each arm's unsolved stretches and how much was clipped.
 Check them before going further: a long unsolved stretch on one arm splits
 the trajectory into sections.
@@ -153,6 +157,19 @@ At any time:
 - **Go here:** every section has a *Go here* button, so you can jump to it.
   Restarts and jumps still stop at that section's *Move to start* prompt.
 - **After the last section**, the script waits so you can start over.
+
+**Delta mode** (`--mode delta`) is the alternative to playing KIWI's joint
+angles:
+- At each section start it takes the arm's actual commanded pose and applies
+  the demo tool's motion since that point (`task_50hz.csv`).
+- It solves IK on the station for the real gripper's tip (`--tcp`, default
+  the YAM `hand_tcp`).
+- The base tags then only matter through the bases' yaw, which orients the
+  motion; their position errors drop out.
+- A section can also start from wherever the arm is ("Start from here").
+- It ends early where the IK misses by more than 10 mm or 0.15 rad.
+
+Check it first with `replay_trajectory.py --csv … --mode delta` (plan only).
 
 **If the page loses contact:** a motion stops by itself when the page hasn't
 updated for 2 s (`--ui-deadman-s`), for example because the tab was closed or

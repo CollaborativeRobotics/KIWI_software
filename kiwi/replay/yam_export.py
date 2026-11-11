@@ -11,6 +11,14 @@ ROS station) and isaac_yam replay drivers consume:
   joint limits to ``limit_tol`` rad. A 50 Hz step is ok only if the solved
   frames on both sides of it are ok.
 
+Task-space poses (``export_task``, ``task_50hz.csv`` beside the CSV): each arm's
+demo tool pose - the Chopstick SA tip KIWI's IK tracked, ``SA_TCP`` in link_6 -
+in that arm's own base frame (base_link: on the floor, X forward, Z up), as
+x y z (m) and a quaternion qx qy qz qw, on the same 50 Hz rows. A replay can
+apply the demo's motion relative to where the arm actually starts (delta
+mode in openarm_ros2's replay_trajectory.py), so only the bases' yaw matters,
+not where the tags put them.
+
 Demo videos (``write_demo_videos``): each stream of the episode re-encoded on the
 trajectory's clock (the episode's global clock), as ``demo_<label>.mp4`` beside
 the CSV, so a frame at media time t shows the demo at trajectory time t. The
@@ -54,6 +62,62 @@ HEADER = (
     "right_j1,right_j2,right_j3,right_j4,right_j5,right_j6,right_grip_m,"
     "left_ok,right_ok"
 )
+
+
+SA_TCP = (
+    0.0,
+    -0.003,
+    0.194,
+)  # the Chopstick SA tip in link_6 (kiwi.replay.yam _SA_TCP, mount yaw 0)
+TASK_HEADER = ",".join(
+    f"{s}_{k}" for s in SIDES for k in ("x", "y", "z", "qx", "qy", "qz", "qw")
+)
+
+
+def base_poses(rollout: dict) -> dict[str, np.ndarray]:
+    """Each arm's base_link pose (4x4) in the solve's world frame: ``yam_dual_urdf``
+    puts left at +Y, right at -Y, ``separation`` apart, turned by ``base_yaw_deg``."""
+    from scipy.spatial.transform import Rotation
+
+    sep = float(rollout.get("separation", 1.0))
+    yaws = np.asarray(rollout.get("base_yaw_deg", (0.0, 0.0)), float)
+    out = {}
+    for s, y, yaw in zip(SIDES, (sep / 2.0, -sep / 2.0), yaws):
+        T = np.eye(4)
+        T[:3, :3] = Rotation.from_euler("z", yaw, degrees=True).as_matrix()
+        T[:3, 3] = (0.0, y, 0.0)
+        out[s] = T
+    return out
+
+
+def export_task(rollout: dict, *, rate_hz: float = RATE_HZ) -> np.ndarray:
+    """(steps, 14): per arm (left, right) the demo's tool pose (``<side>_target``)
+    in that arm's base frame, x y z qx qy qz qw, resampled like ``export_joints``
+    (positions linearly, rotations by slerp)."""
+    from scipy.spatial.transform import Rotation, Slerp
+
+    fps = float(rollout["fps"])
+    n = len(rollout["left_joints"])
+    t = (
+        np.asarray(rollout["times"], float)
+        if "times" in rollout
+        else np.arange(n) / fps
+    )
+    tq = np.arange(0.0, t[-1] + 1e-9, 1.0 / rate_hz)
+    cols = []
+    for s, Tb in base_poses(rollout).items():
+        tgt = np.asarray(rollout[f"{s}_target"], float)
+        R_w = Rotation.from_euler(
+            "xyz", tgt[:, 3:6], degrees=True
+        )  # as kiwi.replay.solve logs it
+        Rb_inv = Rotation.from_matrix(Tb[:3, :3]).inv()
+        pos = (tgt[:, :3] - Tb[:3, 3]) @ Tb[:3, :3]  # into the base frame
+        rot = Slerp(t, Rb_inv * R_w)(tq)
+        cols += [
+            np.stack([np.interp(tq, t, pos[:, i]) for i in range(3)], 1),
+            rot.as_quat(),
+        ]
+    return np.concatenate(cols, 1)
 
 
 def _runs(mask: np.ndarray, dt: float) -> list[list[float]]:
@@ -129,6 +193,20 @@ def write_joints_csv(rollout_path: Path, out: Path, **kw) -> dict:
     for k in ("separation", "base_yaw_deg", "left_tag", "right_tag"):
         if k in rollout:
             report[k] = np.asarray(rollout[k]).tolist()
+    task = out.with_name("task_50hz.csv")
+    np.savetxt(
+        task,
+        export_task(rollout, **{k: v for k, v in kw.items() if k == "rate_hz"}),
+        delimiter=",",
+        fmt="%.7f",
+        header=TASK_HEADER,
+    )
+    report["task"] = {
+        "file": task.name,
+        "frame": "each arm's base_link",
+        "tool": "chopstick_sa_tcp",
+        "tool_in_link6_m": list(SA_TCP),
+    }
     out.with_suffix(".json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 

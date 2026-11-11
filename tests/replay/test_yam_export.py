@@ -49,3 +49,24 @@ def test_demo_video_argv_shifts_onto_the_global_clock():
         b[b.index("-ss") + 1] == "0.000"
         and "tpad=start_duration=0.500" in b[b.index("-vf") + 1]
     )
+
+
+def test_task_poses_are_in_each_arms_base_frame():
+    pytest = __import__("pytest")
+    pytest.importorskip("scipy")
+    from scipy.spatial.transform import Rotation
+
+    r = _rollout(n=4)
+    r["separation"], r["base_yaw_deg"] = 1.0, np.array([-90.0, 90.0])
+    local = Rotation.from_euler("xyz", [10.0, 20.0, 30.0], degrees=True)
+    for s, Tb in yam_export.base_poses(r).items():
+        p_w = Tb[:3, :3] @ np.array([0.4, 0.05, 0.2]) + Tb[:3, 3]
+        R_w = Rotation.from_matrix(Tb[:3, :3]) * local
+        r[f"{s}_target"] = np.tile(
+            np.r_[p_w, R_w.as_euler("xyz", degrees=True)], (4, 1)
+        )
+    task = yam_export.export_task(r)
+    for c in (0, 7):
+        assert np.allclose(task[:, c : c + 3], [0.4, 0.05, 0.2])
+        q = Rotation.from_quat(task[0, c + 3 : c + 7])
+        assert (q * local.inv()).magnitude() < 1e-9
